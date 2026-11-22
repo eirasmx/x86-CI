@@ -1,0 +1,14 @@
+
+name: Startup Test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  startup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify runner
+        run: echo "GitHub Actions runner started successfully"

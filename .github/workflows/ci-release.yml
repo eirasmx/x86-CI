@@ -1,0 +1,255 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: "What do you want to release?"
+        type: choice
+        required: true
+        default: engine
+        options:
+          - engine
+          - galculator
+          - gtk-demo
+      tag:
+        description: "Release tag (leave empty to generate one)"
+        type: string
+        required: false
+        default: ""
+      run_tests:
+        description: "Run cargo test before an OSx86 engine release"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the private x86-64 repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/x86-64
+          token: ${{ secrets.OSX86_RELEASE_TOKEN }}
+          path: osx86
+          persist-credentials: false
+
+      - name: Set up Rust stable
+        working-directory: osx86
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Set up the WebAssembly target
+        if: ${{ inputs.product == 'engine' }}
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        if: ${{ inputs.product == 'engine' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Work out release version and tag
+        id: meta
+        working-directory: osx86
+        env:
+          PRODUCT: ${{ inputs.product }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          case "$PRODUCT" in
+            engine)
+              version=$(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+              default_tag="v${version}-build.${GITHUB_RUN_NUMBER}"
+              ;;
+            galculator)
+              version=""
+              default_tag="galculator-build.${GITHUB_RUN_NUMBER}"
+              ;;
+            gtk-demo)
+              version=""
+              default_tag="gtk-demo-build.${GITHUB_RUN_NUMBER}"
+              ;;
+            *)
+              echo "Unknown product: $PRODUCT"
+              exit 1
+              ;;
+          esac
+
+          tag="$REQUESTED_TAG"
+          if [ -z "$tag" ]; then tag="$default_tag"; fi
+          if [[ ! "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid release tag: $tag"
+            exit 1
+          fi
+
+          source_commit=$(git rev-parse HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Releasing $PRODUCT as $tag from private commit $source_commit"
+
+      - name: Stop if the release already exists
+        working-directory: osx86
+        env:
+          GH_TOKEN: ${{ secrets.OSX86_RELEASE_TOKEN }}
+          TARGET_REPO: ${{ github.repository_owner }}/x86-64
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "A release called $RELEASE_TAG already exists in $TARGET_REPO. Choose another tag."
+            exit 1
+          fi
+          if gh api "repos/$TARGET_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "The tag $RELEASE_TAG already exists in $TARGET_REPO. Choose another tag."
+            exit 1
+          fi
+
+      # OSx86 engine release
+      - name: Run engine tests
+        if: ${{ inputs.product == 'engine' && inputs.run_tests }}
+        working-directory: osx86
+        run: cargo test
+
+      - name: Build OSx86 for WebAssembly
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Install the matching wasm-bindgen CLI
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        run: |
+          version=$(cargo metadata --format-version 1 | python3 -c "import json,sys; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name'] == 'wasm-bindgen'))")
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Write the browser bindings
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        run: wasm-bindgen --target web --out-dir pkg-web target/wasm32-unknown-unknown/release/OSx86.wasm
+
+      - name: Check the built bridge in Node
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        run: |
+          node tests/wasm/bridge_core.cjs
+          node tests/wasm/bridge_web.mjs
+          node tests/wasm/gui_renderer.mjs
+
+      - name: Lay out the CleraOS engine files
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        env:
+          ENGINE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE_COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          rm -rf dist && mkdir -p dist/x86/bridge dist/x86/pkg-web
+          cp bridge/core.mjs bridge/index.mjs bridge/index.cjs bridge/gui_wire.mjs bridge/dom_renderer.mjs bridge/dom_renderer.css bridge/gui_window_router.mjs bridge/fallback_consent.mjs bridge/hid_keys.mjs dist/x86/bridge/
+          cp pkg-web/OSx86.js pkg-web/OSx86_bg.wasm dist/x86/pkg-web/
+          cp pkg-web/OSx86.d.ts pkg-web/OSx86_bg.wasm.d.ts dist/x86/pkg-web/ 2>/dev/null || true
+          python3 - <<'PY'
+          import json, os, datetime
+          info = {
+              "engine": "OSx86",
+              "version": os.environ["ENGINE_VERSION"],
+              "tag": os.environ["RELEASE_TAG"],
+              "commit": os.environ["SOURCE_COMMIT"],
+              "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "profile": "release",
+              "target": "wasm32-unknown-unknown",
+          }
+          with open("dist/x86/engine-version.json", "w") as f:
+              json.dump(info, f, indent=2)
+              f.write("\n")
+          PY
+          find dist -type f | sort
+
+      - name: Package OSx86 engine
+        if: ${{ inputs.product == 'engine' }}
+        working-directory: osx86
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          zip_name="OSx86-${RELEASE_TAG}.zip"
+          (cd dist && zip -r -9 "../$zip_name" x86)
+          sha256sum "$zip_name" > "$zip_name.sha256"
+          echo "ASSET_ONE=$zip_name" >> "$GITHUB_ENV"
+          echo "ASSET_TWO=$zip_name.sha256" >> "$GITHUB_ENV"
+
+      # Galculator release
+      - name: Build Galculator bundle
+        if: ${{ inputs.product == 'galculator' }}
+        working-directory: osx86
+        run: bash .github/run-test.sh galculator-bundle
+
+      - name: Package Galculator
+        if: ${{ inputs.product == 'galculator' }}
+        working-directory: osx86
+        run: |
+          (cd galculator && zip -qr ../galculator.zip .)
+          sha256sum galculator.zip > galculator.zip.sha256
+          unzip -l galculator.zip
+          echo "ASSET_ONE=galculator.zip" >> "$GITHUB_ENV"
+          echo "ASSET_TWO=galculator.zip.sha256" >> "$GITHUB_ENV"
+
+      # GTK demo release
+      - name: Build GTK demo bundle
+        if: ${{ inputs.product == 'gtk-demo' }}
+        working-directory: osx86
+        run: bash .github/run-test.sh gtk-demo-bundle
+
+      - name: Package GTK demo
+        if: ${{ inputs.product == 'gtk-demo' }}
+        working-directory: osx86
+        run: |
+          (cd gtk-demo && zip -qr ../gtk-demo.zip .)
+          sha256sum gtk-demo.zip > gtk-demo.zip.sha256
+          unzip -l gtk-demo.zip
+          echo "ASSET_ONE=gtk-demo.zip" >> "$GITHUB_ENV"
+          echo "ASSET_TWO=gtk-demo.zip.sha256" >> "$GITHUB_ENV"
+
+      - name: Publish release to the private x86-64 repository
+        working-directory: osx86
+        env:
+          GH_TOKEN: ${{ secrets.OSX86_RELEASE_TOKEN }}
+          TARGET_REPO: ${{ github.repository_owner }}/x86-64
+          PRODUCT: ${{ inputs.product }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          ENGINE_VERSION: ${{ steps.meta.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          short=$(echo "$SOURCE_COMMIT" | cut -c1-7)
+          case "$PRODUCT" in
+            engine)
+              title="OSx86 $RELEASE_TAG"
+              notes="Built files of the OSx86 engine $ENGINE_VERSION (commit $short), release mode, for CleraOS.
+
+              Unzip and copy the \`x86\` folder into the CleraOS repository as \`os/core/execution/x86/\`, then add its files to the \`SHELL\` list in \`sw.js\`. The \`bridge\` and \`pkg-web\` folders must stay side by side. Check the zip against its .sha256 file."
+              ;;
+            galculator)
+              title="galculator for the x86-64 engine"
+              notes="The real galculator of Alpine 3.22 with its libraries, data files, and fonts, and the GTK 3 shim, laid out as a CleraOS project folder (program at the top, usr, lib, etc). Extract the zip into a project folder and run ./galculator in the Terminal. Built from private commit ${SOURCE_COMMIT}."
+              ;;
+            gtk-demo)
+              title="GTK 3 demo programs for the x86-64 engine"
+              notes="Four GTK 3 test programs, the GTK 3 shim, and the musl GLib libraries, laid out as a CleraOS project folder (programs at the top, usr/lib, lib, etc). Extract the zip into a project folder and run a program in the Terminal. Built from private commit ${SOURCE_COMMIT}."
+              ;;
+          esac
+
+          gh release create "$RELEASE_TAG" "$ASSET_ONE" "$ASSET_TWO" \
+            --repo "$TARGET_REPO" \
+            --target "$SOURCE_COMMIT" \
+            --title "$title" \
+            --notes "$notes"
+
+      - name: Clean private checkout
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: rm -rf osx86

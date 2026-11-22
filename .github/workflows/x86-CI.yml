@@ -5,11 +5,14 @@ name: x86-CI
 # `build-wasm` runs the ordinary build and standard test suite.
 # `selected-test` runs the selected case from OSx86's .github/run-test.sh.
 # The private source is never committed to or uploaded into this public repository.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
       test:
-        description: "Test to run besides the build"
+        description: "Select a test to run alongside the build"
         type: choice
         default: none
         options:
@@ -174,7 +177,7 @@ jobs:
         run: rm -rf osx86
 
   selected-test:
-    if: inputs.test != 'none'
+    if: inputs.test != 'none' && inputs.test != ''
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -197,8 +200,27 @@ jobs:
         with:
           node-version: 20
 
+      - name: Validate selected test against the private test registry
+        env:
+          TEST_NAME: ${{ inputs.test }}
+        run: |
+          if [[ -z "$TEST_NAME" || "$TEST_NAME" == "none" ]]; then
+            echo "No test selected; skipping selected-test job."
+            exit 1
+          fi
+
+          if ! grep -Fqx "  ${TEST_NAME})" .github/run-test.sh; then
+            echo "Unknown test: $TEST_NAME"
+            echo "The selected value is not a case in .github/run-test.sh."
+            exit 1
+          fi
+
+          echo "Validated test: $TEST_NAME"
+
       - name: Run the selected test
-        run: bash .github/run-test.sh "${{ inputs.test }}"
+        env:
+          TEST_NAME: ${{ inputs.test }}
+        run: bash .github/run-test.sh "$TEST_NAME"
 
       # Only the `guest-programs` test writes this folder
       - name: Upload the guest programs
@@ -221,4 +243,3 @@ jobs:
         if: always()
         working-directory: ${{ github.workspace }}
         run: rm -rf osx86
-

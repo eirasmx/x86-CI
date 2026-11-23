@@ -99,6 +99,7 @@ on:
           - gtk-shim-widget-activation
           - gtk-shim-widget-geometry
           - gtk-shim-widget-colors
+          - gtk-shim-css-radius
           - gtk-shim-widget-platform
           - gtk-shim-dialog-basics
           - gtk-shim-dialog-run

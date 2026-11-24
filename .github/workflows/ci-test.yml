@@ -133,6 +133,7 @@ on:
           - gtk-app-run
           - galculator-source-fonts
           - wasm-environment
+          - gtk-shim-widget-event-dispatch
 
 jobs:
   build-wasm:

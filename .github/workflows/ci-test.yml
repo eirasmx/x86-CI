@@ -134,6 +134,7 @@ on:
           - galculator-source-fonts
           - wasm-environment
           - gtk-shim-widget-event-dispatch
+          - gtk-shim-key-events
 
 jobs:
   build-wasm:

@@ -135,6 +135,7 @@ on:
           - wasm-environment
           - gtk-shim-widget-event-dispatch
           - gtk-shim-key-events
+          - gtk-shim-pointer-events
 
 jobs:
   build-wasm:

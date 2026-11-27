@@ -85,7 +85,6 @@ on:
           - gtk-shim-pointer
           - gtk-shim-keys
           - gtk-shim-focus
-          - gtk-shim-focus-events
           - gtk-shim-resend
           - gtk-shim-pad
           - gtk-app-gaps
@@ -137,6 +136,8 @@ on:
           - gtk-shim-widget-event-dispatch
           - gtk-shim-key-events
           - gtk-shim-pointer-events
+          - gtk-shim-focus-events
+          - gtk-shim-event-propagation
 
 jobs:
   build-wasm:

@@ -85,6 +85,7 @@ on:
           - gtk-shim-pointer
           - gtk-shim-keys
           - gtk-shim-focus
+          - gtk-shim-focus-events
           - gtk-shim-resend
           - gtk-shim-pad
           - gtk-app-gaps

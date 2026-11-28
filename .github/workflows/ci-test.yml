@@ -138,6 +138,7 @@ on:
           - gtk-shim-pointer-events
           - gtk-shim-focus-events
           - gtk-shim-event-propagation
+          - gtk-shim-menu-bar
 
 jobs:
   build-wasm:
